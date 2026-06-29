@@ -285,11 +285,15 @@ func (a *API) adminListAudit(w http.ResponseWriter, r *http.Request) error {
 
 // --- helpers -------------------------------------------------------------
 
+// clientTypeFromQuery resolves the client type for the OAuth /start endpoint.
+// /start is hit by a full-page browser navigation, so it defaults to WEB (a 302
+// redirect to Google). Native/mobile apps opt in with ?client=native to get the
+// authorization URL as JSON instead.
 func clientTypeFromQuery(r *http.Request) auth.ClientType {
 	if strings.EqualFold(r.URL.Query().Get("client"), "native") {
 		return auth.ClientNative
 	}
-	return auth.DetectClientType(r)
+	return auth.ClientWeb
 }
 
 func deviceFromRequest(r *http.Request) auth.DeviceInfo {
