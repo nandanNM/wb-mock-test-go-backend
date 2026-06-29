@@ -14,20 +14,18 @@ jobs:
     runs-on: ubuntu-latest
     env:
       VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_SSH_KEY_B64: ${{ secrets.VPS_SSH_KEY_B64 }}
+      VPS_SSH_PORT: ${{ secrets.VPS_SSH_PORT }}
     steps:
       - name: Build & roll the container forward on the VPS
         if: ${{ env.VPS_HOST != '' }}
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_SSH_PORT || '22' }}
-          script: |
-            set -euo pipefail
-            cd /root/apps/wb-backend/repo
-            git fetch --depth 1 origin main
-            git reset --hard origin/main
-            docker compose up -d --build app
-            docker image prune -f
-            docker compose ps
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s' "$VPS_SSH_KEY_B64" | base64 -d > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh -i ~/.ssh/deploy_key -p "${VPS_SSH_PORT:-22}" -o StrictHostKeyChecking=accept-new \
+            "$VPS_USER@$VPS_HOST" \
+            'set -e; cd /root/apps/wb-backend/repo && git fetch --depth 1 origin main && git reset --hard origin/main && docker compose up -d --build app && docker image prune -f && docker compose ps'
+          rm -f ~/.ssh/deploy_key
