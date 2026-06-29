@@ -8,3 +8,6 @@ bin/
 README.md
 .github/
 Makefile
+docker-compose.yml
+Caddyfile
+scripts/

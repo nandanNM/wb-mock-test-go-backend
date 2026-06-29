@@ -5,15 +5,12 @@ package handler
 
 import (
 	"context"
-	"errors"
 	"net/http"
-	"strconv"
-	"strings"
 	"time"
 
+	"backend/internal/audit"
 	"backend/internal/auth"
 	"backend/internal/httpx"
-	"backend/internal/logger"
 	"backend/internal/middleware"
 	"backend/internal/rbac"
 	"backend/internal/repository"
@@ -35,6 +32,19 @@ type API struct {
 	csrf            *middleware.CSRF
 	rbac            *rbac.Service
 	successRedirect string
+
+	// Dashboard wiring.
+	auditRec  *audit.Recorder
+	subjects  *repository.SubjectRepository
+	chapters  *repository.ChapterRepository
+	notes     *repository.ChapterNoteRepository
+	questions *repository.QuestionRepository
+	tests     *repository.TestRepository
+	sessions  *repository.SessionRepository
+	roles     *repository.RoleRepository
+	attempts  *repository.AttemptRepository
+	battles   *repository.BattleRepository
+	follows   *repository.FollowRepository
 }
 
 // Deps bundles everything New needs. Grouping into a struct keeps the
@@ -49,6 +59,18 @@ type Deps struct {
 	CSRF            *middleware.CSRF
 	RBAC            *rbac.Service
 	SuccessRedirect string
+
+	Audit     *audit.Recorder
+	Subjects  *repository.SubjectRepository
+	Chapters  *repository.ChapterRepository
+	Notes     *repository.ChapterNoteRepository
+	Questions *repository.QuestionRepository
+	Tests     *repository.TestRepository
+	Sessions  *repository.SessionRepository
+	Roles     *repository.RoleRepository
+	Attempts  *repository.AttemptRepository
+	Battles   *repository.BattleRepository
+	Follows   *repository.FollowRepository
 }
 
 // New constructs the API with its dependencies.
@@ -64,7 +86,41 @@ func New(d Deps) *API {
 		csrf:            d.CSRF,
 		rbac:            d.RBAC,
 		successRedirect: d.SuccessRedirect,
+		auditRec:        d.Audit,
+		subjects:        d.Subjects,
+		chapters:        d.Chapters,
+		notes:           d.Notes,
+		questions:       d.Questions,
+		tests:           d.Tests,
+		sessions:        d.Sessions,
+		roles:           d.Roles,
+		attempts:        d.Attempts,
+		battles:         d.Battles,
+		follows:         d.Follows,
 	}
+}
+
+// principalUserID returns the authenticated caller's user id.
+func principalUserID(r *http.Request) (string, bool) {
+	p, ok := middleware.PrincipalFromContext(r.Context())
+	return p.UserID, ok
+}
+
+// auditDash records a dashboard mutation by the current admin (best-effort).
+func (a *API) auditDash(r *http.Request, eventType string, detail map[string]any) {
+	if a.auditRec == nil {
+		return
+	}
+	p, _ := middleware.PrincipalFromContext(r.Context())
+	uid := p.UserID
+	a.auditRec.Record(r.Context(), repository.AuditEvent{
+		EventType: eventType,
+		UserID:    &uid,
+		IP:        clientIP(r),
+		UserAgent: r.UserAgent(),
+		RequestID: middleware.RequestIDFromContext(r.Context()),
+		Detail:    detail,
+	})
 }
 
 // Routes returns the application's router using Go 1.22+ method+path patterns,
@@ -100,11 +156,6 @@ func (a *API) Routes() *http.ServeMux {
 	mux.Handle("DELETE /v1/auth/sessions/{id}", protected(a.revokeSession))
 	mux.Handle("GET /v1/me", protected(a.me))
 
-	// User directory (requires the users:read permission).
-	mux.Handle("GET /v1/users", admin("users:read", a.listUsers))
-	mux.Handle("POST /v1/users", admin("users:read", a.createUser))
-	mux.Handle("GET /v1/users/{id}", admin("users:read", a.getUser))
-
 	// Admin.
 	mux.Handle("POST /v1/admin/users/{id}/ban", admin("users:ban", a.adminSetStatus("banned")))
 	mux.Handle("POST /v1/admin/users/{id}/suspend", admin("users:ban", a.adminSetStatus("suspended")))
@@ -113,7 +164,73 @@ func (a *API) Routes() *http.ServeMux {
 	mux.Handle("DELETE /v1/admin/users/{id}/roles/{role}", admin("roles:manage", a.adminRevokeRole))
 	mux.Handle("GET /v1/admin/audit", admin("audit:read", a.adminListAudit))
 
+	a.dashboardRoutes(mux, admin)
 	return mux
+}
+
+// crud registers list/create/get/update/delete for a resource under the given
+// permission. Pass nil handlers to skip an action.
+type crudSet struct {
+	list, create, get, update, delete httpx.HandlerFunc
+}
+
+// dashboardRoutes mounts the admin/super-admin dashboard CRUD + read APIs.
+// `admin(perm, h)` enforces authentication + the named permission (super_admin
+// bypasses all checks). Permissions the admin role lacks (users:delete,
+// attempts:delete) therefore become super-admin-only automatically.
+func (a *API) dashboardRoutes(mux *http.ServeMux, admin func(string, httpx.HandlerFunc) http.Handler) {
+	// register mounts CRUD with separate read (list/get) and write
+	// (create/update/delete) permissions, so a view-only admin tier is possible.
+	register := func(resource, readPerm, writePerm string, c crudSet) {
+		base := "/v1/admin/" + resource
+		if c.list != nil {
+			mux.Handle("GET "+base, admin(readPerm, c.list))
+		}
+		if c.get != nil {
+			mux.Handle("GET "+base+"/{id}", admin(readPerm, c.get))
+		}
+		if c.create != nil {
+			mux.Handle("POST "+base, admin(writePerm, c.create))
+		}
+		if c.update != nil {
+			mux.Handle("PATCH "+base+"/{id}", admin(writePerm, c.update))
+		}
+		if c.delete != nil {
+			mux.Handle("DELETE "+base+"/{id}", admin(writePerm, c.delete))
+		}
+	}
+
+	// Content — reads gated by :read, writes by :manage (admin holds both).
+	register("subjects", "subjects:read", "subjects:manage", crudSet{a.listSubjects, a.createSubject, a.getSubject, a.updateSubject, a.deleteSubject})
+	register("chapters", "chapters:read", "chapters:manage", crudSet{a.listChapters, a.createChapter, a.getChapter, a.updateChapter, a.deleteChapter})
+	register("notes", "notes:read", "notes:manage", crudSet{a.listNotes, a.createNote, a.getNote, a.updateNote, a.deleteNote})
+	register("questions", "questions:read", "questions:manage", crudSet{a.listQuestions, a.createQuestion, a.getQuestion, a.updateQuestion, a.deleteQuestion})
+	register("tests", "tests:read", "tests:manage", crudSet{a.listTests, a.createTest, a.getTest, a.updateTest, a.deleteTest})
+
+	// Users — read + hard delete (delete is super-admin-only via users:delete).
+	register("users", "users:read", "users:read", crudSet{list: a.dashListUsers, get: a.dashGetUser})
+	mux.Handle("DELETE /v1/admin/users/{id}", admin("users:delete", a.deleteUser))
+
+	// Sessions — list + revoke.
+	mux.Handle("GET /v1/admin/sessions", admin("sessions:read", a.dashListSessions))
+	mux.Handle("DELETE /v1/admin/sessions/{id}", admin("sessions:revoke", a.dashRevokeSession))
+
+	// Attempts — read + delete (delete is super-admin-only via attempts:delete).
+	register("attempts", "attempts:read", "attempts:read", crudSet{list: a.listAttempts, get: a.getAttempt})
+	mux.Handle("DELETE /v1/admin/attempts/{id}", admin("attempts:delete", a.deleteAttempt))
+
+	// Battles — read + moderation (force-finish, delete).
+	register("battles", "battles:read", "battles:read", crudSet{list: a.listBattles, get: a.getBattle})
+	mux.Handle("POST /v1/admin/battles/{id}/finish", admin("battles:manage", a.finishBattle))
+	mux.Handle("DELETE /v1/admin/battles/{id}", admin("battles:manage", a.deleteBattle))
+
+	// Follows — read + moderation delete.
+	mux.Handle("GET /v1/admin/follows", admin("follows:read", a.listFollows))
+	mux.Handle("DELETE /v1/admin/follows/{follower}/{followee}", admin("follows:read", a.deleteFollow))
+
+	// RBAC catalog (read-only; assignment is via the super-admin role endpoints).
+	mux.Handle("GET /v1/admin/roles", admin("users:read", a.listRoles))
+	mux.Handle("GET /v1/admin/permissions", admin("users:read", a.listPermissions))
 }
 
 // health is a liveness probe: is the process up?
@@ -137,79 +254,5 @@ func (a *API) ready(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"status": "ready"})
-	return nil
-}
-
-// listUsers returns the most recent users, with an optional ?limit= param.
-func (a *API) listUsers(w http.ResponseWriter, r *http.Request) error {
-	limit := 50
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			limit = n
-		}
-	}
-
-	users, err := a.users.List(r.Context(), limit)
-	if err != nil {
-		return httpx.Wrap(httpx.ErrInternal, err)
-	}
-	httpx.JSON(w, http.StatusOK, users)
-	return nil
-}
-
-// getUser fetches a single user by id, returning a structured 404 if missing.
-func (a *API) getUser(w http.ResponseWriter, r *http.Request) error {
-	id := r.PathValue("id")
-
-	user, err := a.users.GetByID(r.Context(), id)
-	if err != nil {
-		if errors.Is(err, repository.ErrNotFound) {
-			return httpx.ErrNotFound.WithDetails(map[string]any{"id": id})
-		}
-		return httpx.Wrap(httpx.ErrInternal, err)
-	}
-	httpx.JSON(w, http.StatusOK, user)
-	return nil
-}
-
-// createUserRequest is the expected POST body.
-type createUserRequest struct {
-	Name  string `json:"name"`
-	Email string `json:"email"`
-}
-
-// createUser validates input and persists a new user.
-func (a *API) createUser(w http.ResponseWriter, r *http.Request) error {
-	var req createUserRequest
-	if err := httpx.Decode(r, &req); err != nil {
-		return err
-	}
-
-	// Input validation -> structured 422 with per-field detail.
-	fields := map[string]any{}
-	req.Name = strings.TrimSpace(req.Name)
-	req.Email = strings.TrimSpace(req.Email)
-	if req.Name == "" {
-		fields["name"] = "is required"
-	}
-	if req.Email == "" {
-		fields["email"] = "is required"
-	} else if !strings.Contains(req.Email, "@") {
-		fields["email"] = "must be a valid email address"
-	}
-	if len(fields) > 0 {
-		return httpx.ErrValidation.WithDetails(fields)
-	}
-
-	user, err := a.users.Create(r.Context(), req.Name, req.Email)
-	if err != nil {
-		if errors.Is(err, repository.ErrDuplicate) {
-			return httpx.ErrConflict.WithDetails(map[string]any{"email": "already in use"})
-		}
-		return httpx.Wrap(httpx.ErrInternal, err)
-	}
-
-	logger.FromContext(r.Context()).Info("user created", "user_id", user.ID)
-	httpx.JSON(w, http.StatusCreated, user)
 	return nil
 }

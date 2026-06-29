@@ -12,6 +12,7 @@ COPY . .
 # Static, stripped binary with the version stamped in.
 ARG VERSION=docker
 RUN CGO_ENABLED=0 GOOS=linux go build \
+    -trimpath \
     -ldflags "-s -w -X main.version=${VERSION}" \
     -o /out/server ./cmd/server
 

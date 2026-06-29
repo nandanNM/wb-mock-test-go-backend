@@ -47,8 +47,15 @@ func HasRole(roles []string, name string) bool {
 	return false
 }
 
-// Can reports whether the given roles grant the named permission.
+// RoleSuperAdmin has unrestricted access and bypasses all permission checks.
+const RoleSuperAdmin = "super_admin"
+
+// Can reports whether the given roles grant the named permission. A super_admin
+// is allowed everything.
 func (s *Service) Can(ctx context.Context, roles []string, permission string) (bool, error) {
+	if HasRole(roles, RoleSuperAdmin) {
+		return true, nil
+	}
 	for _, role := range roles {
 		perms, err := s.permsForRole(ctx, role)
 		if err != nil {
@@ -100,6 +107,23 @@ func RequireRole(role string) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// RequireSuperAdmin is middleware that allows only super administrators. Used
+// for privilege-escalation-sensitive actions (role management, hard deletes).
+func RequireSuperAdmin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p, ok := middleware.PrincipalFromContext(r.Context())
+		if !ok {
+			middleware.WriteError(w, r, http.StatusUnauthorized, "unauthorized", "Authentication is required.")
+			return
+		}
+		if !HasRole(p.Roles, RoleSuperAdmin) {
+			middleware.WriteError(w, r, http.StatusForbidden, "forbidden", "Super administrator access required.")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // RequirePermission is middleware that allows only callers whose roles grant the

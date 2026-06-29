@@ -1,0 +1,23 @@
+# Caddy reverse proxy with automatic HTTPS (Let's Encrypt).
+# DOMAIN and ACME_EMAIL come from the environment (set in docker-compose.yml).
+
+{
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# Forward everything to the Go backend on the internal network.
+	reverse_proxy app:8080 {
+		# Pass the real client IP + scheme so the app's X-Forwarded-For handling
+		# and secure-cookie logic work correctly behind the proxy.
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	# Sensible request limit; tune as needed.
+	request_body {
+		max_size 10MB
+	}
+}

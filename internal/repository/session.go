@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -17,7 +18,7 @@ const reuseGrace = 10 * time.Second
 // Session is a logged-in device. Refresh token material is never exposed.
 type Session struct {
 	ID          string     `json:"id"`
-	UserID      string     `json:"-"`
+	UserID      string     `json:"user_id"`
 	UserAgent   string     `json:"user_agent"`
 	IP          string     `json:"ip"`
 	DeviceLabel string     `json:"device_label"`
@@ -157,6 +158,39 @@ func (r *SessionRepository) ListActive(ctx context.Context, userID, currentSessi
 		sessions = append(sessions, s)
 	}
 	return sessions, rows.Err()
+}
+
+// ListAll returns a paginated list of sessions (including revoked/expired) for
+// the dashboard, optionally filtered by user.
+func (r *SessionRepository) ListAll(ctx context.Context, userID string, p ListParams) ([]Session, int64, error) {
+	where, args := "", []any{}
+	if userID != "" {
+		where = " WHERE user_id = $1"
+		args = append(args, userID)
+	}
+	var total int64
+	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM sessions`+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	q := `SELECT id, user_id::text, COALESCE(user_agent,''), COALESCE(host(ip),''), COALESCE(device_label,''),
+	             created_at, last_used_at, expires_at, revoked_at
+	      FROM sessions` + where + ` ` + p.orderBy("last_used_at") +
+		fmt.Sprintf(` LIMIT %d OFFSET %d`, p.limit(), p.Offset)
+	rows, err := r.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := make([]Session, 0)
+	for rows.Next() {
+		var s Session
+		if err := rows.Scan(&s.ID, &s.UserID, &s.UserAgent, &s.IP, &s.DeviceLabel,
+			&s.CreatedAt, &s.LastUsedAt, &s.ExpiresAt, &s.RevokedAt); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, s)
+	}
+	return out, total, rows.Err()
 }
 
 // Revoke marks a single active session revoked. Returns ErrNotFound if the

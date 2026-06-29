@@ -5,6 +5,8 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -79,6 +81,62 @@ func (r *UserRepository) GetByID(ctx context.Context, id string) (User, error) {
 		return User{}, err
 	}
 	return u, nil
+}
+
+// UserFilter narrows a dashboard user list.
+type UserFilter struct {
+	Status string // active | suspended | banned
+	Search string // matches name or email
+}
+
+// ListPage returns a paginated, filtered page of users plus the total count.
+func (r *UserRepository) ListPage(ctx context.Context, f UserFilter, p ListParams) ([]User, int64, error) {
+	conds, args := []string{}, []any{}
+	if f.Status != "" {
+		args = append(args, f.Status)
+		conds = append(conds, fmt.Sprintf("status = $%d", len(args)))
+	}
+	if f.Search != "" {
+		args = append(args, "%"+f.Search+"%")
+		conds = append(conds, fmt.Sprintf("(name ILIKE $%d OR email ILIKE $%d)", len(args), len(args)))
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = " WHERE " + strings.Join(conds, " AND ")
+	}
+	var total int64
+	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM users`+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	sort := p.orderBy("created_at")
+	q := `SELECT ` + userColumns + ` FROM users` + where + ` ` + sort +
+		fmt.Sprintf(` LIMIT %d OFFSET %d`, p.limit(), p.Offset)
+	rows, err := r.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := make([]User, 0)
+	for rows.Next() {
+		var u User
+		if err := scanUser(rows, &u); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, u)
+	}
+	return out, total, rows.Err()
+}
+
+// Delete hard-deletes a user (super-admin only; cascades to owned rows).
+func (r *UserRepository) Delete(ctx context.Context, id string) error {
+	tag, err := r.pool.Exec(ctx, `DELETE FROM users WHERE id=$1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // SetStatus updates a user's account status and reason (ban/suspend/reinstate).

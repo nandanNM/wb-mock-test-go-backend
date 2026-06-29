@@ -15,6 +15,55 @@ func NewRoleRepository(pool *pgxpool.Pool) *RoleRepository {
 	return &RoleRepository{pool: pool}
 }
 
+// Role and Permission are dashboard read models.
+type Role struct {
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	Description *string `json:"description,omitempty"`
+}
+
+type Permission struct {
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	Description *string `json:"description,omitempty"`
+}
+
+// ListRoles returns all roles with their permission names attached.
+func (r *RoleRepository) ListRoles(ctx context.Context) ([]Role, error) {
+	rows, err := r.pool.Query(ctx, `SELECT id::text, name, description FROM roles ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Role, 0)
+	for rows.Next() {
+		var ro Role
+		if err := rows.Scan(&ro.ID, &ro.Name, &ro.Description); err != nil {
+			return nil, err
+		}
+		out = append(out, ro)
+	}
+	return out, rows.Err()
+}
+
+// ListPermissions returns all permissions.
+func (r *RoleRepository) ListPermissions(ctx context.Context) ([]Permission, error) {
+	rows, err := r.pool.Query(ctx, `SELECT id::text, name, description FROM permissions ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Permission, 0)
+	for rows.Next() {
+		var p Permission
+		if err := rows.Scan(&p.ID, &p.Name, &p.Description); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // RolesForUser returns the user's role names.
 func (r *RoleRepository) RolesForUser(ctx context.Context, userID string) ([]string, error) {
 	const q = `

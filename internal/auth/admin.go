@@ -73,6 +73,10 @@ func (s *Service) RevokeRole(ctx context.Context, actorID, targetID, role string
 	return nil
 }
 
+// InvalidateUserCache drops cached status for a user so a change (e.g. hard
+// delete) takes effect immediately rather than after the cache TTL.
+func (s *Service) InvalidateUserCache(userID string) { s.cache.InvalidateUser(userID) }
+
 // ListAudit returns recent audit records, optionally filtered by user.
 func (s *Service) ListAudit(ctx context.Context, userID string, limit int) ([]repository.AuditRecord, error) {
 	return s.audit.List(ctx, userID, limit)

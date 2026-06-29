@@ -69,6 +69,16 @@ func run() error {
 	auditRepo := repository.NewAuditRepository(pool)
 	flowRepo := repository.NewOAuthFlowRepository(pool)
 
+	// Dashboard repositories.
+	subjectRepo := repository.NewSubjectRepository(pool)
+	chapterRepo := repository.NewChapterRepository(pool)
+	noteRepo := repository.NewChapterNoteRepository(pool)
+	questionRepo := repository.NewQuestionRepository(pool)
+	testRepo := repository.NewTestRepository(pool)
+	attemptRepo := repository.NewAttemptRepository(pool)
+	battleRepo := repository.NewBattleRepository(pool)
+	followRepo := repository.NewFollowRepository(pool)
+
 	// --- Auth wiring ------------------------------------------------------
 	tokenSvc, err := auth.NewTokenService(cfg.Auth, log)
 	if err != nil {
@@ -126,6 +136,18 @@ func run() error {
 		CSRF:            csrf,
 		RBAC:            rbacSvc,
 		SuccessRedirect: cfg.Auth.SuccessRedirectURL,
+
+		Audit:     auditRecorder,
+		Subjects:  subjectRepo,
+		Chapters:  chapterRepo,
+		Notes:     noteRepo,
+		Questions: questionRepo,
+		Tests:     testRepo,
+		Sessions:  sessionRepo,
+		Roles:     roleRepo,
+		Attempts:  attemptRepo,
+		Battles:   battleRepo,
+		Follows:   followRepo,
 	})
 
 	// --- Middleware -------------------------------------------------------

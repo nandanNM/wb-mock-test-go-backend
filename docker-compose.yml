@@ -1,0 +1,63 @@
+# Production deployment for a single VPS: the Go backend behind Caddy
+# (automatic HTTPS). The database is hosted (Neon) — no DB container needed.
+#
+# Setup on the VPS:
+#   1. Point a DNS A record (e.g. api.yourdomain.com) at the VPS IP.
+#   2. Open ports 80 and 443 in the firewall.
+#   3. Copy .env (with production values — see notes below) next to this file.
+#   4. Set DOMAIN and ACME_EMAIL (in .env or the shell), then:
+#        docker compose up -d --build
+#
+# Required production values in .env (override the local-dev defaults):
+#   APP_ENV=production
+#   AUTH_COOKIE_SECURE=true
+#   GOOGLE_REDIRECT_URL=https://${DOMAIN}/v1/auth/google/callback
+#   OAUTH_SUCCESS_REDIRECT=https://<your-frontend>
+#   DOMAIN=api.yourdomain.com
+#   ACME_EMAIL=you@yourdomain.com
+
+services:
+  app:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-prod}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Hard production overrides (win over .env) so a stale local value can't
+      # weaken the deployment.
+      APP_ENV: production
+      HOST: 0.0.0.0
+      PORT: "8080"
+      AUTH_COOKIE_SECURE: "true"
+    expose:
+      - "8080" # internal only — reachable by Caddy, never published to the host
+    networks:
+      - web
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    environment:
+      DOMAIN: ${DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data # persists issued certificates across restarts
+      - caddy_config:/config
+    depends_on:
+      - app
+    networks:
+      - web
+
+networks:
+  web:
+
+volumes:
+  caddy_data:
+  caddy_config:
