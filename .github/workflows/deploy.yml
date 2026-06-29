@@ -1,73 +1,33 @@
 name: Deploy
 
-# Build the image on every push to main, publish it to GHCR, then SSH into the
-# Hostinger VPS and roll the running container forward. Manual runs are allowed
-# via the "Run workflow" button.
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
-# Never let two deploys race onto the box at once.
 concurrency:
   group: deploy-backend
   cancel-in-progress: false
 
-permissions:
-  contents: read
-  packages: write
-
 jobs:
-  build-and-push:
-    runs-on: ubuntu-latest
-    outputs:
-      image: ${{ steps.meta.outputs.image }}
-    steps:
-      - uses: actions/checkout@v4
-
-      # GHCR requires a lowercase repository path.
-      - id: meta
-        run: echo "image=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
-
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          build-args: |
-            VERSION=${{ github.sha }}
-          tags: |
-            ${{ steps.meta.outputs.image }}:latest
-            ${{ steps.meta.outputs.image }}:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
   deploy:
-    needs: build-and-push
     runs-on: ubuntu-latest
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
     steps:
-      - name: Roll the VPS container forward
+      - name: Build & roll the container forward on the VPS
+        if: ${{ env.VPS_HOST != '' }}
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_SSH_PORT || '22' }}
-          # The compose file + production .env live on the box at /opt/backend.
           script: |
             set -euo pipefail
-            cd /opt/backend
-            echo "${{ secrets.GHCR_PAT }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-            # Pin to the exact image we just built for an immutable, rollback-able deploy.
-            export BACKEND_IMAGE="${{ needs.build-and-push.outputs.image }}:${{ github.sha }}"
-            docker compose pull
-            docker compose up -d
+            cd /root/apps/wb-backend/repo
+            git fetch --depth 1 origin main
+            git reset --hard origin/main
+            docker compose up -d --build app
             docker image prune -f
-            docker logout ghcr.io
+            docker compose ps
