@@ -41,6 +41,22 @@ func TestGetDurationAcceptsBareSeconds(t *testing.T) {
 	}
 }
 
+func TestParseDotEnvValue(t *testing.T) {
+	cases := map[string]string{
+		"development          # inline comment": "development",
+		"info":                                  "info",
+		"*":                                     "*",
+		`'postgres://u:p@h/db?a=1#frag'`:        "postgres://u:p@h/db?a=1#frag", // # inside quotes preserved
+		`"quoted value"`:                        "quoted value",
+		"  spaced  # c":                         "spaced",
+	}
+	for in, want := range cases {
+		if got := parseDotEnvValue(in); got != want {
+			t.Errorf("parseDotEnvValue(%q): got %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestGetCSV(t *testing.T) {
 	t.Setenv("CORS_ALLOWED_ORIGINS", "https://a.com, https://b.com ,")
 	t.Setenv("DATABASE_URL", "postgres://u:p@localhost/db")

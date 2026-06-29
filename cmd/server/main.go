@@ -12,12 +12,16 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"backend/internal/audit"
+	"backend/internal/auth"
 	"backend/internal/config"
 	"backend/internal/database"
 	"backend/internal/handler"
 	"backend/internal/logger"
 	"backend/internal/middleware"
+	"backend/internal/rbac"
 	"backend/internal/repository"
 )
 
@@ -57,10 +61,72 @@ func run() error {
 		return err
 	}
 
-	// --- Dependencies -----------------------------------------------------
+	// --- Repositories -----------------------------------------------------
 	userRepo := repository.NewUserRepository(pool)
+	identityRepo := repository.NewIdentityRepository(pool)
+	sessionRepo := repository.NewSessionRepository(pool)
+	roleRepo := repository.NewRoleRepository(pool)
+	auditRepo := repository.NewAuditRepository(pool)
+	flowRepo := repository.NewOAuthFlowRepository(pool)
+
+	// --- Auth wiring ------------------------------------------------------
+	tokenSvc, err := auth.NewTokenService(cfg.Auth, log)
+	if err != nil {
+		return err
+	}
+	googleProvider, err := auth.NewGoogleProvider(ctx, cfg.Auth)
+	if err != nil {
+		return err
+	}
+	if googleProvider == nil {
+		log.Warn("Google login disabled — set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to enable it")
+	}
+
+	auditRecorder := audit.New(auditRepo, log)
+	transport := auth.NewTransport(cfg.Auth, log)
+
+	// The status cache resolves account/session status from the DB on a miss
+	// (the resolver depends only on the session repo, avoiding a bootstrap cycle).
+	statusResolver := func(ctx context.Context, _, sessionID string) (auth.AccountStatus, error) {
+		userStatus, revoked, err := sessionRepo.Status(ctx, sessionID)
+		if err != nil {
+			return auth.AccountStatus{}, err
+		}
+		return auth.AccountStatus{UserStatus: userStatus, SessionRevoked: revoked}, nil
+	}
+	statusCache := auth.NewMemStatusCache(cfg.Auth.StatusCacheTTL, statusResolver)
+
+	authSvc := auth.NewService(auth.Deps{
+		Users:               userRepo,
+		Identities:          identityRepo,
+		Sessions:            sessionRepo,
+		Roles:               roleRepo,
+		Tokens:              tokenSvc,
+		Cache:               statusCache,
+		Audit:               auditRecorder,
+		Flows:               flowRepo,
+		Google:              googleProvider,
+		RefreshTTL:          cfg.Auth.RefreshTokenTTL,
+		BootstrapAdminEmail: cfg.Auth.BootstrapAdminEmail,
+		Log:                 log,
+	})
+
+	authn := middleware.NewAuthenticator(tokenSvc, statusCache)
+	csrf := middleware.NewCSRF(transport)
+	rbacSvc := rbac.NewService(roleRepo, time.Minute)
+
 	readiness := func(ctx context.Context) error { return database.HealthCheck(ctx, pool) }
-	api := handler.New(version, userRepo, readiness)
+	api := handler.New(handler.Deps{
+		Version:         version,
+		Users:           userRepo,
+		Readiness:       readiness,
+		Auth:            authSvc,
+		Transport:       transport,
+		Authenticator:   authn,
+		CSRF:            csrf,
+		RBAC:            rbacSvc,
+		SuccessRedirect: cfg.Auth.SuccessRedirectURL,
+	})
 
 	// --- Middleware -------------------------------------------------------
 	// Order matters (outermost first): RequestID so every layer sees the ID;

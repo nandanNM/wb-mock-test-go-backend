@@ -5,7 +5,7 @@ VERSION ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 LDFLAGS := -X main.version=$(VERSION)
 IMAGE   ?= backend:latest
 
-.PHONY: run build test vet fmt tidy clean docker-build docker-run
+.PHONY: run build test vet fmt tidy clean docker-build docker-run gen-keys
 
 run: ## Run the server (reads .env)
 	$(GO) run $(PKG)
@@ -33,3 +33,6 @@ docker-build: ## Build the Docker image
 
 docker-run: ## Run the image (pass DATABASE_URL via your shell or --env-file .env)
 	docker run --rm -p 8080:8080 --env-file .env $(IMAGE)
+
+gen-keys: ## Print fresh AUTH_JWT_PRIVATE_KEY and CSRF_HMAC_KEY for .env
+	@$(GO) run ./cmd/genkeys

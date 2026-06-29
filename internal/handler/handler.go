@@ -11,8 +11,11 @@ import (
 	"strings"
 	"time"
 
+	"backend/internal/auth"
 	"backend/internal/httpx"
 	"backend/internal/logger"
+	"backend/internal/middleware"
+	"backend/internal/rbac"
 	"backend/internal/repository"
 )
 
@@ -24,29 +27,91 @@ type API struct {
 	users     *repository.UserRepository
 	// readiness checks the health of external dependencies (e.g. the DB).
 	readiness func(ctx context.Context) error
+
+	// Authentication wiring.
+	auth            *auth.Service
+	transport       *auth.Transport
+	authn           *middleware.Authenticator
+	csrf            *middleware.CSRF
+	rbac            *rbac.Service
+	successRedirect string
+}
+
+// Deps bundles everything New needs. Grouping into a struct keeps the
+// constructor stable as dependencies grow.
+type Deps struct {
+	Version         string
+	Users           *repository.UserRepository
+	Readiness       func(ctx context.Context) error
+	Auth            *auth.Service
+	Transport       *auth.Transport
+	Authenticator   *middleware.Authenticator
+	CSRF            *middleware.CSRF
+	RBAC            *rbac.Service
+	SuccessRedirect string
 }
 
 // New constructs the API with its dependencies.
-func New(version string, users *repository.UserRepository, readiness func(ctx context.Context) error) *API {
+func New(d Deps) *API {
 	return &API{
-		startedAt: time.Now(),
-		version:   version,
-		users:     users,
-		readiness: readiness,
+		startedAt:       time.Now(),
+		version:         d.Version,
+		users:           d.Users,
+		readiness:       d.Readiness,
+		auth:            d.Auth,
+		transport:       d.Transport,
+		authn:           d.Authenticator,
+		csrf:            d.CSRF,
+		rbac:            d.RBAC,
+		successRedirect: d.SuccessRedirect,
 	}
 }
 
 // Routes returns the application's router using Go 1.22+ method+path patterns,
-// so no third-party router is needed.
+// so no third-party router is needed. Per-route auth/RBAC/CSRF is applied by
+// wrapping individual handlers.
 func (a *API) Routes() *http.ServeMux {
 	mux := http.NewServeMux()
 
+	// protected requires a valid access token.
+	protected := func(h httpx.HandlerFunc) http.Handler {
+		return a.authn.Require(httpx.Handler(h))
+	}
+	// admin requires authentication AND the given permission.
+	admin := func(perm string, h httpx.HandlerFunc) http.Handler {
+		return a.authn.Require(a.rbac.RequirePermission(perm)(httpx.Handler(h)))
+	}
+
+	// Health (public).
 	mux.Handle("GET /healthz", httpx.Handler(a.health))
 	mux.Handle("GET /readyz", httpx.Handler(a.ready))
 
-	mux.Handle("GET /v1/users", httpx.Handler(a.listUsers))
-	mux.Handle("POST /v1/users", httpx.Handler(a.createUser))
-	mux.Handle("GET /v1/users/{id}", httpx.Handler(a.getUser))
+	// OAuth (public — they bootstrap authentication).
+	mux.Handle("GET /v1/auth/google/start", httpx.Handler(a.googleStart))
+	mux.Handle("GET /v1/auth/google/callback", httpx.Handler(a.googleCallback))
+
+	// Refresh is cookie- or body-authenticated; CSRF-guarded for cookie callers.
+	mux.Handle("POST /v1/auth/refresh", a.csrf.Protect(httpx.Handler(a.refresh)))
+
+	// Authenticated session management.
+	mux.Handle("POST /v1/auth/logout", protected(a.logout))
+	mux.Handle("POST /v1/auth/logout-all", protected(a.logoutAll))
+	mux.Handle("GET /v1/auth/sessions", protected(a.listSessions))
+	mux.Handle("DELETE /v1/auth/sessions/{id}", protected(a.revokeSession))
+	mux.Handle("GET /v1/me", protected(a.me))
+
+	// User directory (requires the users:read permission).
+	mux.Handle("GET /v1/users", admin("users:read", a.listUsers))
+	mux.Handle("POST /v1/users", admin("users:read", a.createUser))
+	mux.Handle("GET /v1/users/{id}", admin("users:read", a.getUser))
+
+	// Admin.
+	mux.Handle("POST /v1/admin/users/{id}/ban", admin("users:ban", a.adminSetStatus("banned")))
+	mux.Handle("POST /v1/admin/users/{id}/suspend", admin("users:ban", a.adminSetStatus("suspended")))
+	mux.Handle("POST /v1/admin/users/{id}/reinstate", admin("users:ban", a.adminSetStatus("active")))
+	mux.Handle("POST /v1/admin/users/{id}/roles", admin("roles:manage", a.adminGrantRole))
+	mux.Handle("DELETE /v1/admin/users/{id}/roles/{role}", admin("roles:manage", a.adminRevokeRole))
+	mux.Handle("GET /v1/admin/audit", admin("audit:read", a.adminListAudit))
 
 	return mux
 }

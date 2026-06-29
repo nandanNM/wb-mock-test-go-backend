@@ -20,11 +20,20 @@ var ErrDuplicate = errors.New("record already exists")
 
 // User is the domain model for a user row.
 type User struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Email     string    `json:"email"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	Email         string    `json:"email"`
+	Status        string    `json:"status"` // active | suspended | banned
+	EmailVerified bool      `json:"email_verified"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// userColumns is the canonical projection used by all user SELECTs.
+const userColumns = `id, name, email, status, email_verified, created_at, updated_at`
+
+func scanUser(row pgx.Row, u *User) error {
+	return row.Scan(&u.ID, &u.Name, &u.Email, &u.Status, &u.EmailVerified, &u.CreatedAt, &u.UpdatedAt)
 }
 
 // UserRepository provides access to the users table.
@@ -43,11 +52,10 @@ func (r *UserRepository) Create(ctx context.Context, name, email string) (User, 
 	const q = `
 		INSERT INTO users (name, email)
 		VALUES ($1, $2)
-		RETURNING id, name, email, created_at, updated_at`
+		RETURNING ` + userColumns
 
 	var u User
-	err := r.pool.QueryRow(ctx, q, name, email).
-		Scan(&u.ID, &u.Name, &u.Email, &u.CreatedAt, &u.UpdatedAt)
+	err := scanUser(r.pool.QueryRow(ctx, q, name, email), &u)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique_violation
@@ -60,13 +68,10 @@ func (r *UserRepository) Create(ctx context.Context, name, email string) (User, 
 
 // GetByID fetches a user by id. Returns ErrNotFound if absent.
 func (r *UserRepository) GetByID(ctx context.Context, id string) (User, error) {
-	const q = `
-		SELECT id, name, email, created_at, updated_at
-		FROM users WHERE id = $1`
+	const q = `SELECT ` + userColumns + ` FROM users WHERE id = $1`
 
 	var u User
-	err := r.pool.QueryRow(ctx, q, id).
-		Scan(&u.ID, &u.Name, &u.Email, &u.CreatedAt, &u.UpdatedAt)
+	err := scanUser(r.pool.QueryRow(ctx, q, id), &u)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return User{}, ErrNotFound
@@ -76,14 +81,26 @@ func (r *UserRepository) GetByID(ctx context.Context, id string) (User, error) {
 	return u, nil
 }
 
+// SetStatus updates a user's account status and reason (ban/suspend/reinstate).
+// Returns ErrNotFound if no such user.
+func (r *UserRepository) SetStatus(ctx context.Context, id, status, reason string) error {
+	const q = `UPDATE users SET status = $2, status_reason = $3 WHERE id = $1`
+	tag, err := r.pool.Exec(ctx, q, id, status, reason)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // List returns users ordered by newest first, capped by limit.
 func (r *UserRepository) List(ctx context.Context, limit int) ([]User, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
-	const q = `
-		SELECT id, name, email, created_at, updated_at
-		FROM users ORDER BY created_at DESC LIMIT $1`
+	const q = `SELECT ` + userColumns + ` FROM users ORDER BY created_at DESC LIMIT $1`
 
 	rows, err := r.pool.Query(ctx, q, limit)
 	if err != nil {
@@ -94,7 +111,7 @@ func (r *UserRepository) List(ctx context.Context, limit int) ([]User, error) {
 	users := make([]User, 0)
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Name, &u.Email, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		if err := scanUser(rows, &u); err != nil {
 			return nil, err
 		}
 		users = append(users, u)
