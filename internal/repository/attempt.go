@@ -11,18 +11,19 @@ import (
 )
 
 type Attempt struct {
-	ID             int64           `json:"id"`
-	UserID         string          `json:"user_id"`
-	TestID         int64           `json:"test_id"`
-	BattleID       *int64          `json:"battle_id,omitempty"`
-	LanguageCode   string          `json:"language_code"`
-	Score          int16           `json:"score"`
-	TotalQuestions int16           `json:"total_questions"`
-	Accuracy       float64         `json:"accuracy"`
-	PointsEarned   int             `json:"points_earned"`
-	StartedAt      time.Time       `json:"started_at"`
-	CompletedAt    *time.Time      `json:"completed_at,omitempty"`
-	Answers        []AttemptAnswer `json:"answers,omitempty"`
+	ID              int64           `json:"id"`
+	UserID          string          `json:"user_id"`
+	TestID          int64           `json:"test_id"`
+	BattleID        *int64          `json:"battle_id,omitempty"`
+	LanguageCode    string          `json:"language_code"`
+	Score           int16           `json:"score"`
+	TotalQuestions  int16           `json:"total_questions"`
+	Accuracy        float64         `json:"accuracy"`
+	PointsEarned    int             `json:"points_earned"`
+	DurationSeconds *int            `json:"duration_seconds,omitempty"`
+	StartedAt       time.Time       `json:"started_at"`
+	CompletedAt     *time.Time      `json:"completed_at,omitempty"`
+	Answers         []AttemptAnswer `json:"answers,omitempty"`
 }
 
 type AttemptAnswer struct {
@@ -37,11 +38,11 @@ type AttemptRepository struct{ pool *pgxpool.Pool }
 
 func NewAttemptRepository(pool *pgxpool.Pool) *AttemptRepository { return &AttemptRepository{pool} }
 
-const attemptCols = `id, user_id::text, test_id, battle_id, language_code, score, total_questions, accuracy::float8, points_earned, started_at, completed_at`
+const attemptCols = `id, user_id::text, test_id, battle_id, language_code, score, total_questions, accuracy::float8, points_earned, duration_seconds, started_at, completed_at`
 
 func scanAttempt(row pgx.Row, a *Attempt) error {
 	return row.Scan(&a.ID, &a.UserID, &a.TestID, &a.BattleID, &a.LanguageCode, &a.Score,
-		&a.TotalQuestions, &a.Accuracy, &a.PointsEarned, &a.StartedAt, &a.CompletedAt)
+		&a.TotalQuestions, &a.Accuracy, &a.PointsEarned, &a.DurationSeconds, &a.StartedAt, &a.CompletedAt)
 }
 
 type AttemptFilter struct {

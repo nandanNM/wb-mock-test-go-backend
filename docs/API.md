@@ -216,6 +216,60 @@ Object: `{ follower_id, followee_id, created_at }`
 
 ---
 
+# User-facing APIs (client / mobile)
+
+All require authentication (any logged-in user). Reads expose **published** content only.
+
+## Catalog — browse
+- `GET /v1/subjects` → bare array of subjects (display order).
+- `GET /v1/subjects/{id}/chapters` → bare array of chapters.
+- `GET /v1/chapters/{id}/notes` → bare array of notes.
+- `GET /v1/chapters/{id}/tests` → bare array of published tests covering the chapter, each with the caller's status:
+  ```jsonc
+  { "id": 12, "title_en": "...", "test_code": "GK-06", "difficulty": "medium",
+    "question_count": 10,
+    "status": "not_attempted",        // | "in_progress" | "completed"
+    "attempts_count": 0, "best_score": null, "last_completed_at": null }
+  ```
+
+## Mock test — take a test
+- **`POST /v1/tests/{id}/attempts`** — open a test. Body `{ "language_code": "en" }` (`en|bn`). Creates an in-progress attempt and returns the questions **without** the answer key:
+  ```jsonc
+  { "data": { "attempt_id": 5, "test_id": 12, "language_code": "en", "total_questions": 10,
+              "started_at": "…",
+              "questions": [ { "id": 7, "position": 0, "prompt": "2+2?",
+                               "options": [ { "id": 21, "position": 0, "body": "3" }, … ] } ] } }
+  ```
+  Errors: `404 not_found`, `409 test_unavailable` (unpublished), `409 no_questions`.
+- **`POST /v1/attempts/{id}/submit`** — grade + store + update streak/points. Body:
+  ```jsonc
+  { "duration_seconds": 240,
+    "answers": [ { "question_id": 7, "selected_option_id": 22 },
+                 { "question_id": 8, "selected_option_id": null } ] }  // null = skipped
+  ```
+  Returns the graded result:
+  ```jsonc
+  { "data": { "attempt_id": 5, "test_id": 12, "score": 8, "total_questions": 10,
+              "correct": 8, "incorrect": 1, "skipped": 1, "accuracy": 80.00,
+              "points_earned": 80, "duration_seconds": 240, "completed_at": "…",
+              "current_streak": 3, "longest_streak": 5,
+              "answer_key": [ { "question_id": 7, "selected_option_id": 22,
+                                "correct_option_id": 22, "is_correct": true }, … ] } }
+  ```
+  Errors: `404 not_found`, `409 already_submitted`, `422 validation_failed` (bad option / negative duration). Points = correct × 10. Streak: +1 if you completed a test yesterday, unchanged if already today, reset to 1 otherwise.
+- **`GET /v1/attempts/{id}`** — a completed attempt's result + answer key (owner only).
+
+## My record — history & analytics
+- `GET /v1/me/attempts` — paginated history (`page`, `limit`, `sort` `started_at|completed_at|score|accuracy`, `order`, filter `test_id`).
+- `GET /v1/me/stats` →
+  ```jsonc
+  { "data": { "total_points": 320, "current_streak": 3, "longest_streak": 5,
+              "last_active_on": "2026-06-30", "total_attempts": 12,
+              "completed_attempts": 11, "avg_accuracy": 74.5, "total_correct": 88 } }
+  ```
+
+---
+
 ## Health (public, unversioned)
 - `GET /healthz` → `{ "data": { "status": "ok", "version": "…", "uptime": "…" } }`
 - `GET /readyz` → `{ "data": { "status": "ready" } }` (200) or `503` if the DB is unreachable.

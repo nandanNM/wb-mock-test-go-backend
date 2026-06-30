@@ -46,6 +46,7 @@ type API struct {
 	battles   *repository.BattleRepository
 	follows   *repository.FollowRepository
 	catalog   *repository.CatalogRepository
+	mocktest  *repository.MockTestRepository
 }
 
 // Deps bundles everything New needs. Grouping into a struct keeps the
@@ -73,6 +74,7 @@ type Deps struct {
 	Battles   *repository.BattleRepository
 	Follows   *repository.FollowRepository
 	Catalog   *repository.CatalogRepository
+	MockTest  *repository.MockTestRepository
 }
 
 // New constructs the API with its dependencies.
@@ -100,6 +102,7 @@ func New(d Deps) *API {
 		battles:         d.Battles,
 		follows:         d.Follows,
 		catalog:         d.Catalog,
+		mocktest:        d.MockTest,
 	}
 }
 
@@ -166,6 +169,13 @@ func (a *API) Routes() *http.ServeMux {
 	mux.Handle("GET /v1/subjects/{id}/chapters", protected(a.catalogChapters))
 	mux.Handle("GET /v1/chapters/{id}/tests", protected(a.catalogTests))
 	mux.Handle("GET /v1/chapters/{id}/notes", protected(a.catalogNotes))
+
+	// Mock test flow (any authenticated user).
+	mux.Handle("POST /v1/tests/{id}/attempts", protected(a.startTest))   // open: create attempt + return questions
+	mux.Handle("POST /v1/attempts/{id}/submit", protected(a.submitTest)) // grade + store + streak
+	mux.Handle("GET /v1/attempts/{id}", protected(a.attemptResult))      // result + answer key (owner)
+	mux.Handle("GET /v1/me/attempts", protected(a.myAttempts))           // history
+	mux.Handle("GET /v1/me/stats", protected(a.myStats))                 // analytics
 
 	// Admin.
 	mux.Handle("POST /v1/admin/users/{id}/ban", admin("users:ban", a.adminSetStatus("banned")))

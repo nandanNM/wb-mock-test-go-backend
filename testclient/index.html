@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>wb-mock-test · API Tester</title>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  :root { --bg:#0f172a; --card:#1e293b; --muted:#94a3b8; --line:#334155; --accent:#38bdf8; --ok:#22c55e; --err:#ef4444; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.5 system-ui, sans-serif; background:#0b1220; color:#e2e8f0; }
+  header { position:sticky; top:0; background:#0b1220; border-bottom:1px solid var(--line); padding:14px 20px; z-index:10; }
+  h1 { font-size:18px; margin:0 0 10px; }
+  .cfg { display:grid; grid-template-columns:1fr 2fr auto; gap:8px; align-items:center; }
+  input, textarea, select { background:var(--card); color:#e2e8f0; border:1px solid var(--line); border-radius:6px; padding:7px 9px; font:inherit; width:100%; }
+  textarea { font-family: ui-monospace, monospace; min-height:64px; }
+  button { background:var(--accent); color:#03263a; border:0; border-radius:6px; padding:7px 14px; font-weight:600; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--accent); border:1px solid var(--accent); }
+  main { padding:16px 20px; max-width:1100px; margin:0 auto; }
+  .group { margin:22px 0 8px; color:var(--accent); font-weight:700; letter-spacing:.04em; text-transform:uppercase; font-size:12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin:10px 0; }
+  .row { display:flex; gap:10px; align-items:center; }
+  .method { font-weight:700; padding:2px 8px; border-radius:5px; font-size:12px; min-width:62px; text-align:center; }
+  .GET{background:#0e7490;color:#cffafe;} .POST{background:#15803d;color:#dcfce7;}
+  .PATCH{background:#a16207;color:#fef9c3;} .PUT{background:#7c3aed;color:#ede9fe;} .DELETE{background:#b91c1c;color:#fee2e2;}
+  .path { flex:1; font-family:ui-monospace,monospace; }
+  .desc { color:var(--muted); font-size:12px; margin:6px 0; }
+  pre { background:#0b1220; border:1px solid var(--line); border-radius:6px; padding:10px; overflow:auto; max-height:340px; margin:8px 0 0; white-space:pre-wrap; word-break:break-word; }
+  .status { font-weight:700; } .s2{color:var(--ok);} .s4,.s5{color:var(--err);}
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState } = React;
+
+// Endpoint catalog. {param} placeholders in the path become editable inputs.
+const GROUPS = [
+  ["Auth", [
+    {m:"GET",  p:"/v1/auth/google/start?client=web", note:"Opens Google login (use the browser, not Send).", open:true},
+    {m:"POST", p:"/v1/auth/google/native", body:{id_token:"<google-id-token>"}, note:"Mobile: exchange a Google ID token for tokens."},
+    {m:"POST", p:"/v1/auth/refresh", body:{refresh_token:"<refresh-token-native>"}, note:"Native refresh. Web uses the cookie + X-CSRF-Token."},
+    {m:"GET",  p:"/v1/me"},
+    {m:"POST", p:"/v1/auth/logout"},
+    {m:"POST", p:"/v1/auth/logout-all"},
+    {m:"GET",  p:"/v1/auth/sessions"},
+    {m:"DELETE", p:"/v1/auth/sessions/{id}"},
+  ]],
+  ["Catalog (user)", [
+    {m:"GET", p:"/v1/subjects"},
+    {m:"GET", p:"/v1/subjects/{id}/chapters"},
+    {m:"GET", p:"/v1/chapters/{id}/tests"},
+    {m:"GET", p:"/v1/chapters/{id}/notes"},
+  ]],
+  ["Mock test (user)", [
+    {m:"POST", p:"/v1/tests/{id}/attempts", body:{language_code:"en"}, note:"Open a test → returns attempt_id + questions."},
+    {m:"POST", p:"/v1/attempts/{id}/submit", body:{duration_seconds:120, answers:[{question_id:0, selected_option_id:0}]}, note:"Grade + store + streak."},
+    {m:"GET",  p:"/v1/attempts/{id}", note:"Result + answer key."},
+    {m:"GET",  p:"/v1/me/attempts", note:"History (page,limit,sort,order)."},
+    {m:"GET",  p:"/v1/me/stats", note:"Points, streak, accuracy."},
+  ]],
+  ["Admin · content", [
+    {m:"GET",  p:"/v1/admin/subjects?page=1&limit=20"},
+    {m:"POST", p:"/v1/admin/subjects", body:{name_en:"Math", name_bn:"গণিত", position:1}},
+    {m:"PATCH",p:"/v1/admin/subjects/{id}", body:{position:2}},
+    {m:"DELETE",p:"/v1/admin/subjects/{id}"},
+    {m:"POST", p:"/v1/admin/chapters", body:{subject_id:0, name_en:"Algebra", name_bn:"বীজগণিত", position:1}},
+    {m:"POST", p:"/v1/admin/notes", body:{chapter_id:0, language_code:"en", title:"Notes", pdf_url:"https://x/y.pdf"}},
+    {m:"POST", p:"/v1/admin/questions", body:{chapter_id:0, prompt_en:"2+2?", prompt_bn:"২+২?", position:0, options:[{position:0,body_en:"3",body_bn:"৩",is_correct:false},{position:1,body_en:"4",body_bn:"৪",is_correct:true}]}},
+    {m:"POST", p:"/v1/admin/tests", body:{subject_id:0, scope_type:"chapter", title_en:"Test 1", title_bn:"টেস্ট", test_code:"T-1", difficulty:"easy", position:1, is_published:true, chapter_ids:[0], question_ids:[0]}},
+  ]],
+  ["Admin · users & moderation", [
+    {m:"GET",  p:"/v1/admin/users?page=1&limit=20"},
+    {m:"GET",  p:"/v1/admin/users/{id}"},
+    {m:"POST", p:"/v1/admin/users/{id}/ban", body:{reason:"spam"}},
+    {m:"POST", p:"/v1/admin/users/{id}/reinstate"},
+    {m:"GET",  p:"/v1/admin/attempts"},
+    {m:"GET",  p:"/v1/admin/audit?limit=20"},
+  ]],
+  ["Super admin · RBAC", [
+    {m:"GET",  p:"/v1/admin/roles"},
+    {m:"GET",  p:"/v1/admin/roles/{id}"},
+    {m:"GET",  p:"/v1/admin/permissions"},
+    {m:"POST", p:"/v1/admin/permissions", body:{name:"reports:read", description:"View reports"}},
+    {m:"POST", p:"/v1/admin/roles", body:{name:"analyst", description:"Reports analyst"}},
+    {m:"PUT",  p:"/v1/admin/roles/{id}/permissions", body:{permission_ids:["<perm-uuid>"]}},
+    {m:"PUT",  p:"/v1/admin/users/{id}/roles", body:{roles:["admin","teacher"]}},
+  ]],
+];
+
+function Endpoint({ ep, base, token }) {
+  const [path, setPath] = useState(ep.p);
+  const [body, setBody] = useState(ep.body ? JSON.stringify(ep.body, null, 2) : "");
+  const [res, setRes] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  async function send() {
+    setBusy(true); setRes(null);
+    try {
+      const init = { method: ep.m, headers: { "Content-Type":"application/json", "X-Client-Type":"native" } };
+      if (token) init.headers["Authorization"] = "Bearer " + token;
+      if (body.trim() && ep.m !== "GET") init.body = body;
+      const r = await fetch(base + path, init);
+      const text = await r.text();
+      let pretty = text; try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch {}
+      setRes({ code: r.status, text: pretty });
+    } catch (e) { setRes({ code: 0, text: String(e) + "\n(CORS? point base at a server that allows this origin.)" }); }
+    setBusy(false);
+  }
+
+  return (
+    <div className="card">
+      <div className="row">
+        <span className={"method "+ep.m}>{ep.m}</span>
+        <input className="path" value={path} onChange={e=>setPath(e.target.value)} />
+        {ep.open
+          ? <button className="ghost" onClick={()=>window.open(base+path,"_blank")}>Open</button>
+          : <button onClick={send} disabled={busy}>{busy?"…":"Send"}</button>}
+      </div>
+      {ep.note && <div className="desc">{ep.note}</div>}
+      {ep.body && ep.m!=="GET" && <textarea value={body} onChange={e=>setBody(e.target.value)} />}
+      {res && <pre><span className={"status s"+String(res.code)[0]}>{res.code||"ERR"}</span>{"\n"+res.text}</pre>}
+    </div>
+  );
+}
+
+function App() {
+  const [base, setBase] = useState(localStorage.getItem("base") || "http://localhost:8080");
+  const [token, setToken] = useState(localStorage.getItem("token") || "");
+  const save = (k,v,set)=>{ set(v); localStorage.setItem(k,v); };
+
+  return (
+    <>
+      <header>
+        <h1>wb-mock-test · API Tester</h1>
+        <div className="cfg">
+          <input placeholder="Base URL" value={base} onChange={e=>save("base",e.target.value,setBase)} />
+          <input placeholder="Access token (paste from /v1/auth/refresh or the dashboard)" value={token} onChange={e=>save("token",e.target.value,setToken)} />
+          <button className="ghost" onClick={()=>save("token","",setToken)}>Clear token</button>
+        </div>
+        <div className="desc">Token is sent as <code>Authorization: Bearer</code>. For CORS, point Base at a server that allows this page's origin (e.g. a local backend with <code>CORS_ALLOWED_ORIGINS=*</code>).</div>
+      </header>
+      <main>
+        {GROUPS.map(([name, eps]) => (
+          <div key={name}>
+            <div className="group">{name}</div>
+            {eps.map((ep,i) => <Endpoint key={i} ep={ep} base={base} token={token} />)}
+          </div>
+        ))}
+      </main>
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
