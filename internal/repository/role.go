@@ -2,7 +2,9 @@ package repository
 
 import (
 	"context"
+	"errors"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -62,6 +64,156 @@ func (r *RoleRepository) ListPermissions(ctx context.Context) ([]Permission, err
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// RoleWithPermissions is a role plus its attached permissions.
+type RoleWithPermissions struct {
+	Role
+	Permissions []Permission `json:"permissions"`
+}
+
+// --- Permission CRUD (super-admin) -----------------------------------------
+
+func (r *RoleRepository) CreatePermission(ctx context.Context, name, description string) (Permission, error) {
+	var p Permission
+	err := r.pool.QueryRow(ctx,
+		`INSERT INTO permissions (name, description) VALUES ($1, NULLIF($2,''))
+		 RETURNING id::text, name, description`, name, description).
+		Scan(&p.ID, &p.Name, &p.Description)
+	return p, mapWrite(err)
+}
+
+func (r *RoleRepository) UpdatePermission(ctx context.Context, id string, name, description *string) (Permission, error) {
+	var p Permission
+	err := r.pool.QueryRow(ctx,
+		`UPDATE permissions SET name = COALESCE($2, name), description = COALESCE($3, description)
+		 WHERE id = $1 RETURNING id::text, name, description`, id, name, description).
+		Scan(&p.ID, &p.Name, &p.Description)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Permission{}, ErrNotFound
+	}
+	return p, mapWrite(err)
+}
+
+func (r *RoleRepository) DeletePermission(ctx context.Context, id string) error {
+	tag, err := r.pool.Exec(ctx, `DELETE FROM permissions WHERE id = $1`, id)
+	if err != nil {
+		return mapWrite(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// --- Role CRUD (super-admin) -----------------------------------------------
+
+func (r *RoleRepository) CreateRole(ctx context.Context, name, description string) (Role, error) {
+	var ro Role
+	err := r.pool.QueryRow(ctx,
+		`INSERT INTO roles (name, description) VALUES ($1, NULLIF($2,''))
+		 RETURNING id::text, name, description`, name, description).
+		Scan(&ro.ID, &ro.Name, &ro.Description)
+	return ro, mapWrite(err)
+}
+
+func (r *RoleRepository) UpdateRole(ctx context.Context, id string, name, description *string) (Role, error) {
+	var ro Role
+	err := r.pool.QueryRow(ctx,
+		`UPDATE roles SET name = COALESCE($2, name), description = COALESCE($3, description)
+		 WHERE id = $1 RETURNING id::text, name, description`, id, name, description).
+		Scan(&ro.ID, &ro.Name, &ro.Description)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Role{}, ErrNotFound
+	}
+	return ro, mapWrite(err)
+}
+
+func (r *RoleRepository) DeleteRole(ctx context.Context, id string) error {
+	tag, err := r.pool.Exec(ctx, `DELETE FROM roles WHERE id = $1`, id)
+	if err != nil {
+		return mapWrite(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// GetRoleWithPermissions returns a role and its attached permissions.
+func (r *RoleRepository) GetRoleWithPermissions(ctx context.Context, id string) (RoleWithPermissions, error) {
+	var out RoleWithPermissions
+	err := r.pool.QueryRow(ctx, `SELECT id::text, name, description FROM roles WHERE id = $1`, id).
+		Scan(&out.ID, &out.Name, &out.Description)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return RoleWithPermissions{}, ErrNotFound
+	}
+	if err != nil {
+		return RoleWithPermissions{}, err
+	}
+	rows, err := r.pool.Query(ctx,
+		`SELECT p.id::text, p.name, p.description
+		 FROM role_permissions rp JOIN permissions p ON p.id = rp.permission_id
+		 WHERE rp.role_id = $1 ORDER BY p.name`, id)
+	if err != nil {
+		return RoleWithPermissions{}, err
+	}
+	defer rows.Close()
+	out.Permissions = make([]Permission, 0)
+	for rows.Next() {
+		var p Permission
+		if err := rows.Scan(&p.ID, &p.Name, &p.Description); err != nil {
+			return RoleWithPermissions{}, err
+		}
+		out.Permissions = append(out.Permissions, p)
+	}
+	return out, rows.Err()
+}
+
+// SetRolePermissions replaces a role's permission set with the given permission
+// IDs (atomic). Returns ErrNotFound if the role doesn't exist. Unknown
+// permission IDs are ignored.
+func (r *RoleRepository) SetRolePermissions(ctx context.Context, roleID string, permissionIDs []string) error {
+	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var exists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM roles WHERE id=$1)`, roleID).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return ErrNotFound
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM role_permissions WHERE role_id = $1`, roleID); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx,
+			`INSERT INTO role_permissions (role_id, permission_id)
+			 SELECT $1, id FROM permissions WHERE id = ANY($2::uuid[])`, roleID, permissionIDs)
+		return err
+	})
+}
+
+// SetUserRoles replaces a user's roles with the given role names (atomic).
+// Unknown role names are ignored.
+func (r *RoleRepository) SetUserRoles(ctx context.Context, userID string, roleNames []string) error {
+	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `DELETE FROM user_roles WHERE user_id = $1`, userID); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx,
+			`INSERT INTO user_roles (user_id, role_id)
+			 SELECT $1, id FROM roles WHERE name = ANY($2::text[])`, userID, roleNames)
+		return err
+	})
+}
+
+// IsSystemRole reports whether a role name is a protected built-in.
+func IsSystemRole(name string) bool {
+	switch name {
+	case "super_admin", "admin", "user", "teacher":
+		return true
+	default:
+		return false
+	}
 }
 
 // RolesForUser returns the user's role names.

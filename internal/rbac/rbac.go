@@ -70,6 +70,15 @@ func (s *Service) Can(ctx context.Context, roles []string, permission string) (b
 	return false, nil
 }
 
+// InvalidateAll clears the role→permission cache. Call after any change to
+// roles, permissions, or role-permission mappings so authorization reflects it
+// immediately instead of after the cache TTL.
+func (s *Service) InvalidateAll() {
+	s.mu.Lock()
+	s.cache = make(map[string]cacheEntry)
+	s.mu.Unlock()
+}
+
 func (s *Service) permsForRole(ctx context.Context, role string) ([]string, error) {
 	now := time.Now()
 	s.mu.Lock()

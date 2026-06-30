@@ -228,9 +228,25 @@ func (a *API) dashboardRoutes(mux *http.ServeMux, admin func(string, httpx.Handl
 	mux.Handle("GET /v1/admin/follows", admin("follows:read", a.listFollows))
 	mux.Handle("DELETE /v1/admin/follows/{follower}/{followee}", admin("follows:read", a.deleteFollow))
 
-	// RBAC catalog (read-only; assignment is via the super-admin role endpoints).
+	// RBAC catalog (read).
 	mux.Handle("GET /v1/admin/roles", admin("users:read", a.listRoles))
+	mux.Handle("GET /v1/admin/roles/{id}", admin("users:read", a.getRole))
 	mux.Handle("GET /v1/admin/permissions", admin("users:read", a.listPermissions))
+
+	// RBAC management (super-admin only — gated by roles:manage, which only
+	// super_admin holds; super_admin also bypasses all checks).
+	mux.Handle("POST /v1/admin/permissions", admin("roles:manage", a.createPermission))
+	mux.Handle("PATCH /v1/admin/permissions/{id}", admin("roles:manage", a.updatePermission))
+	mux.Handle("DELETE /v1/admin/permissions/{id}", admin("roles:manage", a.deletePermission))
+
+	mux.Handle("POST /v1/admin/roles", admin("roles:manage", a.createRole))
+	mux.Handle("PATCH /v1/admin/roles/{id}", admin("roles:manage", a.updateRole))
+	mux.Handle("DELETE /v1/admin/roles/{id}", admin("roles:manage", a.deleteRole))
+	mux.Handle("PUT /v1/admin/roles/{id}/permissions", admin("roles:manage", a.setRolePermissions))
+
+	// Assign a user's full role set (super-admin). Single grant/revoke remain at
+	// POST/DELETE /v1/admin/users/{id}/roles[/{role}].
+	mux.Handle("PUT /v1/admin/users/{id}/roles", admin("roles:manage", a.setUserRoles))
 }
 
 // health is a liveness probe: is the process up?
