@@ -219,6 +219,25 @@ func (s *Service) HandleGoogleCallback(ctx context.Context, state, code string, 
 	return result, ct, flow.RedirectURI, nil
 }
 
+// LoginWithGoogleIDToken verifies a Google ID token from a native mobile client
+// and runs the login pipeline, returning a session. No redirect/cookies — the
+// caller delivers the tokens in the response body (native client type).
+func (s *Service) LoginWithGoogleIDToken(ctx context.Context, idToken string, dev DeviceInfo, meta ReqMeta) (LoginResult, error) {
+	if s.google == nil {
+		return LoginResult{}, ErrGoogleNotConfigured
+	}
+	ext, err := s.google.VerifyIDToken(ctx, idToken)
+	if err != nil {
+		s.audit.Record(ctx, repository.AuditEvent{
+			EventType: audit.EventLoginFailure,
+			IP:        meta.IP, UserAgent: meta.UserAgent, RequestID: meta.RequestID,
+			Detail: map[string]any{"provider": "google", "reason": "invalid_id_token"},
+		})
+		return LoginResult{}, err
+	}
+	return s.completeLogin(ctx, ext, dev, meta)
+}
+
 // completeLogin provisions the user from an external identity, enforces account
 // status, applies the (future) MFA gate, and issues a session.
 func (s *Service) completeLogin(ctx context.Context, ext ExternalIdentity, dev DeviceInfo, meta ReqMeta) (LoginResult, error) {

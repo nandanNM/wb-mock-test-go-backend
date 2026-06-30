@@ -71,6 +71,17 @@ func (g *GoogleProvider) Exchange(ctx context.Context, code, codeVerifier string
 		return ExternalIdentity{}, fmt.Errorf("no id_token in token response")
 	}
 
+	return g.VerifyIDToken(ctx, rawID)
+}
+
+// VerifyIDToken verifies a Google-issued ID token (signature, issuer, audience,
+// expiry) and maps it to a normalized identity. Used by the native mobile flow,
+// where the app obtains the ID token from the Google Sign-In SDK directly.
+//
+// The mobile SDK must be configured with this app's WEB client ID as the
+// audience (e.g. `webClientId` in @react-native-google-signin), so the token's
+// `aud` matches the verifier's configured client ID.
+func (g *GoogleProvider) VerifyIDToken(ctx context.Context, rawID string) (ExternalIdentity, error) {
 	idToken, err := g.verifier.Verify(ctx, rawID)
 	if err != nil {
 		return ExternalIdentity{}, fmt.Errorf("verify id_token: %w", err)

@@ -78,6 +78,38 @@ func (a *API) googleCallback(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+// googleNative completes login from a native mobile client that obtained a
+// Google ID token via the Google Sign-In SDK. Always returns tokens in the body.
+type googleNativeRequest struct {
+	IDToken string `json:"id_token"`
+}
+
+func (a *API) googleNative(w http.ResponseWriter, r *http.Request) error {
+	var req googleNativeRequest
+	if err := httpx.Decode(r, &req); err != nil {
+		return err
+	}
+	if strings.TrimSpace(req.IDToken) == "" {
+		return httpx.ErrValidation.WithDetails(map[string]any{"id_token": "is required"})
+	}
+
+	result, err := a.auth.LoginWithGoogleIDToken(r.Context(), req.IDToken, deviceFromRequest(r), metaFromRequest(r))
+	if err != nil {
+		switch {
+		case errors.Is(err, auth.ErrGoogleNotConfigured):
+			return httpx.NewAPIError(http.StatusNotImplemented, "google_not_configured", "Google login is not configured.")
+		case errors.Is(err, auth.ErrAccountNotActive):
+			return httpx.NewAPIError(http.StatusForbidden, "account_inactive", "This account is not active.")
+		default:
+			return httpx.NewAPIError(http.StatusUnauthorized, "invalid_id_token", "Could not verify the Google ID token.")
+		}
+	}
+
+	// Native clients always receive tokens in the body.
+	httpx.JSON(w, http.StatusOK, a.transport.Deliver(w, auth.ClientNative, result.Tokens))
+	return nil
+}
+
 // --- Tokens / sessions ---------------------------------------------------
 
 type refreshRequest struct {

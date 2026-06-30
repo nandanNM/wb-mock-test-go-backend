@@ -145,6 +145,7 @@ func (a *API) Routes() *http.ServeMux {
 	// OAuth (public — they bootstrap authentication).
 	mux.Handle("GET /v1/auth/google/start", httpx.Handler(a.googleStart))
 	mux.Handle("GET /v1/auth/google/callback", httpx.Handler(a.googleCallback))
+	mux.Handle("POST /v1/auth/google/native", httpx.Handler(a.googleNative))
 
 	// Refresh is cookie- or body-authenticated; CSRF-guarded for cookie callers.
 	mux.Handle("POST /v1/auth/refresh", a.csrf.Protect(httpx.Handler(a.refresh)))
