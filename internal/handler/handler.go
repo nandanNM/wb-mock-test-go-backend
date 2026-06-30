@@ -45,6 +45,7 @@ type API struct {
 	attempts  *repository.AttemptRepository
 	battles   *repository.BattleRepository
 	follows   *repository.FollowRepository
+	catalog   *repository.CatalogRepository
 }
 
 // Deps bundles everything New needs. Grouping into a struct keeps the
@@ -71,6 +72,7 @@ type Deps struct {
 	Attempts  *repository.AttemptRepository
 	Battles   *repository.BattleRepository
 	Follows   *repository.FollowRepository
+	Catalog   *repository.CatalogRepository
 }
 
 // New constructs the API with its dependencies.
@@ -97,6 +99,7 @@ func New(d Deps) *API {
 		attempts:        d.Attempts,
 		battles:         d.Battles,
 		follows:         d.Follows,
+		catalog:         d.Catalog,
 	}
 }
 
@@ -156,6 +159,13 @@ func (a *API) Routes() *http.ServeMux {
 	mux.Handle("GET /v1/auth/sessions", protected(a.listSessions))
 	mux.Handle("DELETE /v1/auth/sessions/{id}", protected(a.revokeSession))
 	mux.Handle("GET /v1/me", protected(a.me))
+
+	// User-facing catalog (any authenticated user). Browse flow:
+	// subjects -> chapters -> {published tests with status, notes}.
+	mux.Handle("GET /v1/subjects", protected(a.catalogSubjects))
+	mux.Handle("GET /v1/subjects/{id}/chapters", protected(a.catalogChapters))
+	mux.Handle("GET /v1/chapters/{id}/tests", protected(a.catalogTests))
+	mux.Handle("GET /v1/chapters/{id}/notes", protected(a.catalogNotes))
 
 	// Admin.
 	mux.Handle("POST /v1/admin/users/{id}/ban", admin("users:ban", a.adminSetStatus("banned")))

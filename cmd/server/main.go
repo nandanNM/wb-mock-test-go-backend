@@ -78,6 +78,7 @@ func run() error {
 	attemptRepo := repository.NewAttemptRepository(pool)
 	battleRepo := repository.NewBattleRepository(pool)
 	followRepo := repository.NewFollowRepository(pool)
+	catalogRepo := repository.NewCatalogRepository(pool)
 
 	// --- Auth wiring ------------------------------------------------------
 	tokenSvc, err := auth.NewTokenService(cfg.Auth, log)
@@ -148,6 +149,7 @@ func run() error {
 		Attempts:  attemptRepo,
 		Battles:   battleRepo,
 		Follows:   followRepo,
+		Catalog:   catalogRepo,
 	})
 
 	// --- Middleware -------------------------------------------------------
